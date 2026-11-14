@@ -179,7 +179,7 @@ footer{font-size:12px;color:var(--muted);text-align:center;padding-inline:8px}
     </div>
   </details>
 
-  <footer>.Ni = lower octave, Sa' = upper octave, (k) komal, (t) tivra. Audio stays on your device.</footer>
+  <footer>Sound recorded from a real 42-key harmonium. .Ni = lower octave, Sa' = upper octave, (k) komal, (t) tivra. Audio stays on your device.</footer>
 </main>
 
 <script>
@@ -190,7 +190,7 @@ const WEST=["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
 const SAR=["Sa","Re(k)","Re","Ga(k)","Ga","Ma","Ma(t)","Pa","Dha(k)","Dha","Ni(k)","Ni"];
 const SHORT=["S","r","R","g","G","m","M","P","d","D","n","N"];
 const DEV=["सा","रे॒","रे","ग॒","ग","म","म॑","प","ध॒","ध","नि॒","नि"];
-const LOW=48, HIGH=83; // C3..B5, a 3-octave harmonium
+const LOW=36, HIGH=77; // C2..F5, the 42-key harmonium the samples were recorded from
 
 let saPc=0;
 const saSel=$("sa");
@@ -224,7 +224,7 @@ saSel.onchange=()=>{saPc=+saSel.value;try{localStorage.setItem("sur-sa",saPc)}ca
 
 // Audio graph
 let ctx,an,srcNode=null,micStream=null,demoStop=null,raf=0;
-const AC=()=>{if(!ctx){ctx=new (window.AudioContext||window.webkitAudioContext)();an=ctx.createAnalyser();an.fftSize=16384;an.smoothingTimeConstant=0.4}return ctx};
+const AC=()=>{if(!ctx){ctx=new (window.AudioContext||window.webkitAudioContext)();an=ctx.createAnalyser();an.fftSize=16384;an.smoothingTimeConstant=0.4;loadSamples()}return ctx};
 // Keep the phone screen on while singing (ignored where unsupported)
 let wake=null;
 async function keepAwake(){try{wake=await navigator.wakeLock.request("screen")}catch(e){wake=null}}
@@ -233,28 +233,30 @@ function releaseWake(){try{wake&&wake.release()}catch(e){}wake=null}
 // Live mode: the mic hears your voice and a harmonium voice follows it on the nearest key, in real time
 let liveMode=false,live=null,liveCand="",liveN=0,lastRms=0;
 function liveStop(){
-  if(live){live.oscs.forEach(o=>{try{o.stop()}catch(e){}});live.out.disconnect();live=null}
+  if(live){const l=live;if(l.cur)releaseReed(l.cur,ctx.currentTime,0.08);setTimeout(()=>l.out.disconnect(),400);live=null}
   liveMode=false;$("sing").classList.remove("on");$("singlabel").textContent="Tap to sing";$("sing").style.setProperty("--lvl",0);releaseWake();
   if(an&&an.fftSize!==16384)an.fftSize=16384;
 }
 function liveSet(midi){
   const now=ctx.currentTime;
-  if(midi===null){live.out.gain.setTargetAtTime(0,now,0.06);live.midi=null;return}
-  const fr=f(midi+(+document.querySelector('input[name="oct"]:checked').value)),vol=Math.min(0.3,0.08+lastRms*3);
-  live.oscs.forEach(o=>o.frequency.setTargetAtTime(fr,now,live.midi===null?0.001:0.008)); // harmonium keys jump, they don't slide
-  live.out.gain.setTargetAtTime(vol,now,live.midi===null?0.015:0.05);
+  if(midi===null){if(live.cur)releaseReed(live.cur,now,0.1);live.cur=null;live.midi=null;return}
+  let hm=midi+(+document.querySelector('input[name="oct"]:checked').value);
+  while(hm<LOW)hm+=12;while(hm>HIGH)hm-=12; // stay on keys the harmonium has
+  if(live.cur)releaseReed(live.cur,now,0.04); // like lifting one key as the next goes down
+  live.cur=startReed(live.out,hm,now);
+  live.out.gain.setTargetAtTime(Math.min(0.3,0.08+lastRms*3),now,0.03);
   live.midi=midi;
 }
 $("sing").onclick=async()=>{
   if(liveMode){stopSource();$("status").textContent="Live mode stopped.";return}
   stopSource();stopPlayback();AC();await ctx.resume();
+  await ensureSamples();
   try{micStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:false}})}
   catch(e){$("status").textContent="Microphone is blocked here. Allow mic access in your browser to sing live.";return}
   an.fftSize=8192; // shorter analysis window: about half the delay, still fine for the voice range
   srcNode=ctx.createMediaStreamSource(micStream);srcNode.connect(an);
-  const out=ctx.createGain();out.gain.value=0;out.connect(ctx.destination);const oscs=[];
-  voice(out,60,ctx.currentTime,1e5,oscs); // a long-held voice; liveSet moves its pitch and volume
-  live={out,oscs,midi:null};liveMode=true;liveCand="";liveN=0;
+  const out=ctx.createGain();out.gain.value=0;out.connect(ctx.destination);
+  live={out,cur:null,midi:null};liveMode=true;liveCand="";liveN=0;
   $("sing").classList.add("on");$("singlabel").textContent="Stop";keepAwake();
   start("Listening. Sing or hum and the harmonium follows you.");
 };
@@ -298,7 +300,7 @@ $("file").onchange=async e=>{
 $("demo").onclick=async()=>{
   if(demoStop){stopSource();$("status").textContent="Demo stopped.";return}
   stopSource();AC();await ctx.resume();
-  stopPlayback();
+  stopPlayback();await ensureSamples();
   const out=ctx.createGain();out.gain.value=0.25;out.connect(an);an.connect(ctx.destination);
   const seq=[0,2,4,5,7,9,11,12,12,11,9,7,5,4,2,0];
   const t0=ctx.currentTime+0.1,d=0.5,oscs=[];
@@ -312,15 +314,56 @@ $("demo").onclick=async()=>{
   start("Playing demo: Sa Re Ga Ma Pa Dha Ni Sa' and back, then a chord.");
 };
 
-// Harmonium-like voice: two slightly detuned reeds with rich overtones
-let wave=null;
-function voice(dest,midi,t,len,list){
-  if(!wave){const harm=[0,1,.9,.7,.55,.45,.35,.25,.2,.15,.1,.08];wave=ctx.createPeriodicWave(new Float32Array(harm.length),new Float32Array(harm))}
-  const fr=440*2**((midi-69)/12),a=Math.min(.04,len/4);
-  [0,4].forEach(det=>{const o=ctx.createOscillator(),g=ctx.createGain();o.setPeriodicWave(wave);o.frequency.value=fr;o.detune.value=det;
-    g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(.5,t+a);g.gain.setValueAtTime(.5,t+len-a);g.gain.linearRampToValueAtTime(0,t+len);
-    o.connect(g);g.connect(dest);o.start(t);o.stop(t+len+.02);list.push(o)});
+// Harmonium sound: real recordings of a 42-key harmonium (C2..F5), one file per key (G3 and G#3 borrow a neighbour).
+// Each file is the key's attack plus ~2.8 s of steady tone; the steady part loops for as long as a note is held.
+// SAMPLE_F is each recording's measured pitch, so playback can be tuned to exact pitch.
+const SAMPLE_F={"36":65.84,"37":69.67,"38":73.96,"39":78.18,"40":82.9,"41":87.59,"42":92.84,"43":98.56,"44":104.58,"45":110.6,"46":117.07,"47":124.03,"48":131.15,"49":139.13,"50":146.79,"51":155.84,"52":165.52,"53":175.18,"54":186.05,"57":221.2,"58":234.15,"59":248.7,"60":262.3,"61":279.07,"62":294.48,"63":311.69,"64":333.33,"65":350.36,"66":372.09,"67":393.44,"68":417.39,"69":440.37,"70":466.02,"71":494.85,"72":527.47,"73":558.14,"74":592.59,"75":623.38,"76":666.67,"77":705.88};
+const samples={};let sampleBytes=null,samplesReady=null;
+function prefetchSamples(){ // download early (no audio context needed), decode on first use
+  if(!sampleBytes)sampleBytes=Object.fromEntries(Object.keys(SAMPLE_F).map(m=>[m,fetch("samples/"+m+".m4a").then(r=>r.ok?r.arrayBuffer():null).catch(()=>null)]));
 }
+function loadSamples(){
+  if(samplesReady)return samplesReady;prefetchSamples();
+  samplesReady=Promise.all(Object.keys(SAMPLE_F).map(async m=>{
+    try{const bytes=await sampleBytes[m];if(!bytes)return;const buf=await ctx.decodeAudioData(bytes);samples[m]={buf,...findLoop(buf,SAMPLE_F[m])}}catch(e){}
+  }));
+  return samplesReady;
+}
+async function ensureSamples(){
+  if(Object.keys(samples).length)return;
+  $("status").textContent="Loading harmonium sound…";
+  await Promise.race([loadSamples(),new Promise(r=>setTimeout(r,8000))]); // fall back to the synth if the network is slow
+}
+// Loop ~1.2 s of the steady tone, a whole number of periods long, ending where the wave best matches the loop start
+function findLoop(buf,fr){
+  const d=buf.getChannelData(0),sr=buf.sampleRate,P=sr/fr,s0=Math.floor(1.0*sr);
+  const W=Math.min(1024,Math.floor(P*3)),base=Math.round(s0+Math.round(1.2*sr/P)*P),r=Math.ceil(P);
+  let best=base,bv=Infinity;
+  for(let e=base-r;e<=base+r&&e+W<d.length;e++){let s=0;for(let i=0;i<W;i++){const k=d[s0+i]-d[e+i];s+=k*k}if(s<bv){bv=s;best=e}}
+  return {ls:s0/sr,le:best/sr};
+}
+function sampleFor(midi){let best=null,bd=99;for(const k in samples){const dd=Math.abs(k-midi);if(dd<bd){bd=dd;best=k}}return bd<=3?best:null}
+// Start one key sounding at time t. Returns a handle for releaseReed.
+let wave=null;
+function startReed(dest,midi,t){
+  const g=ctx.createGain();g.connect(dest);const nodes=[];const k=sampleFor(midi);
+  if(k!==null){
+    const s=samples[k],src=ctx.createBufferSource();src.buffer=s.buf;src.loop=true;src.loopStart=s.ls;src.loopEnd=s.le;
+    src.playbackRate.value=f(midi)/SAMPLE_F[k];src.connect(g);g.gain.setValueAtTime(2.5,t);src.start(t);nodes.push(src);
+  }else{ // synth fallback while samples load: two detuned reeds
+    if(!wave){const harm=[0,1,.9,.7,.55,.45,.35,.25,.2,.15,.1,.08];wave=ctx.createPeriodicWave(new Float32Array(harm.length),new Float32Array(harm))}
+    g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(.5,t+.03);
+    [0,6].forEach(det=>{const o=ctx.createOscillator();o.setPeriodicWave(wave);o.frequency.value=f(midi);o.detune.value=det;o.connect(g);o.start(t);nodes.push(o)});
+  }
+  return {g,nodes};
+}
+function releaseReed(r,t,fade=0.12){
+  r.g.gain.cancelScheduledValues(t);r.g.gain.setTargetAtTime(0,t,fade/3);
+  r.nodes.forEach(n=>{try{n.stop(t+fade+0.1)}catch(e){}});
+}
+// A note of fixed length (demo and playback)
+function voice(dest,midi,t,len,list){const r=startReed(dest,midi,t);releaseReed(r,t+len);list.push(...r.nodes)}
+setTimeout(prefetchSamples,800);
 
 // Play back caught notes with their original timing
 let pbStop=null;
@@ -330,7 +373,7 @@ $("play").onclick=async()=>{
   if(micStream||demoStop||srcNode)stopSource(); // never let the mic hear the playback; also closes the last note
   const items=log.filter(e=>e.d>0.05);
   if(!items.length){$("status").textContent="Nothing to play yet.";return}
-  AC();await ctx.resume();
+  AC();await ctx.resume();await ensureSamples();
   const speed=+$("speed").value,snap=$("rhythm").value==="snap";
   const {plan,beat}=schedule(items,snap);
   const out=ctx.createGain();out.gain.value=0.2;out.connect(ctx.destination);
@@ -422,8 +465,13 @@ function detect(){
   an.getFloatTimeDomainData(td);let rms=0;for(let i=0;i<td.length;i+=4)rms+=td[i]*td[i];rms=Math.sqrt(rms/(td.length/4));lastRms=rms;
   $("level").style.width=Math.min(100,rms*400)+"%";if(liveMode)$("sing").style.setProperty("--lvl",Math.min(1,rms*8).toFixed(2));
   if(rms<(liveMode?0.012:0.008))return[];
-  an.getFloatFrequencyData(spec);
   const rLo=liveMode?40:LOW,rHi=liveMode?84:HIGH; // voices reach lower than the keyboard (E2..C6)
+  if(liveMode||!$("chords").checked){ // single note: time-domain YIN, much better at the right octave for reeds and voices
+    const fr=yinPitch(td,sr);if(!fr)return[];
+    const mf=69+12*Math.log2(fr/440),midi=Math.round(mf);
+    return midi>=rLo&&midi<=rHi?[{midi,freq:fr,cents:Math.round((mf-midi)*100)}]:[];
+  }
+  an.getFloatFrequencyData(spec);
   const lo=Math.floor(f(rLo-1)/bin),hi=Math.ceil(f(rHi+1)/bin),H=4,found=[];
   const maxN=liveMode?1:($("chords").checked?3:1);let first=null;
   for(let n=0;n<maxN;n++){
@@ -439,6 +487,21 @@ function detect(){
   return found;
 }
 const f=m=>440*2**((m-69)/12);
+// YIN pitch detection (de Cheveigné & Kawahara) on the newest audio, downsampled to ~12 kHz.
+// Tested on the harmonium recordings: right note name 160/160, right octave 149/160 (misses only in the lowest keys).
+let yx=null,yd=null;
+function yinPitch(td,sr){
+  const ds=Math.max(1,Math.round(sr/12000)),fs=sr/ds,N=1024,lo=Math.floor(fs/1000),hi=Math.ceil(fs/60),need=N+hi+2,st=td.length-need*ds;
+  if(st<0)return 0;
+  if(!yx||yx.length!==need){yx=new Float32Array(need);yd=new Float32Array(hi+2)}
+  for(let i=0;i<need;i++){let s=0;for(let k=0;k<ds;k++)s+=td[st+i*ds+k];yx[i]=s/ds}
+  let run=0;yd[0]=1;
+  for(let t=1;t<=hi+1;t++){let s=0;for(let i=0;i<N;i++){const e=yx[i]-yx[i+t];s+=e*e}run+=s;yd[t]=run?s*t/run:1}
+  let tau=-1;for(let t=lo;t<=hi;t++){if(yd[t]<0.1){while(t+1<=hi&&yd[t+1]<yd[t])t++;tau=t;break}}
+  if(tau<0){let b=lo;for(let t=lo;t<=hi;t++)if(yd[t]<yd[b])b=t;if(yd[b]>0.25)return 0;tau=b} // no clear pitch: treat as noise
+  const a=yd[tau-1],b=yd[tau],c=yd[tau+1],p=(a-c)/(2*(a-2*b+c))||0;
+  return fs/(tau+Math.max(-.5,Math.min(.5,p)));
+}
 
 // Note stability and transcript
 let cand="",candN=0,shown="",silentN=0,lastLogged="";const log=[];
