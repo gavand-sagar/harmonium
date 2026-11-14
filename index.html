@@ -93,6 +93,8 @@ footer{font-size:12px;color:var(--muted);text-align:center}
 
   <section class="panel controls" aria-label="Sound source">
     <button class="primary" id="mic">Listen with mic</button>
+    <button class="primary" id="sing">Sing → Harmonium</button>
+    <select id="oct" aria-label="Harmonium octave for live mode"><option value="0" selected>Same octave</option><option value="-12">One octave lower</option><option value="12">One octave higher</option></select>
     <button id="demo">Play demo</button>
     <label class="file">Upload recording<input type="file" id="file" accept="audio/*"></label>
     <label class="inline" for="mode">Catch
@@ -185,7 +187,37 @@ saSel.onchange=()=>{saPc=+saSel.value;try{localStorage.setItem("sur-sa",saPc)}ca
 // Audio graph
 let ctx,an,srcNode=null,micStream=null,demoStop=null,raf=0;
 const AC=()=>{if(!ctx){ctx=new (window.AudioContext||window.webkitAudioContext)();an=ctx.createAnalyser();an.fftSize=16384;an.smoothingTimeConstant=0.4}return ctx};
+// Live mode: the mic hears your voice and a harmonium voice follows it on the nearest key, in real time
+let liveMode=false,live=null,liveCand="",liveN=0,lastRms=0;
+function liveStop(){
+  if(live){live.oscs.forEach(o=>{try{o.stop()}catch(e){}});live.out.disconnect();live=null}
+  liveMode=false;$("sing").classList.remove("on");$("sing").textContent="Sing → Harmonium";
+  if(an&&an.fftSize!==16384)an.fftSize=16384;
+}
+function liveSet(midi){
+  const now=ctx.currentTime;
+  if(midi===null){live.out.gain.setTargetAtTime(0,now,0.06);live.midi=null;return}
+  const fr=f(midi+(+$("oct").value)),vol=Math.min(0.3,0.08+lastRms*3);
+  live.oscs.forEach(o=>o.frequency.setTargetAtTime(fr,now,live.midi===null?0.001:0.008)); // harmonium keys jump, they don't slide
+  live.out.gain.setTargetAtTime(vol,now,live.midi===null?0.015:0.05);
+  live.midi=midi;
+}
+$("sing").onclick=async()=>{
+  if(liveMode){stopSource();$("status").textContent="Live mode stopped.";return}
+  stopSource();stopPlayback();AC();await ctx.resume();
+  try{micStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:false}})}
+  catch(e){$("status").textContent="Microphone is blocked here. Allow mic access in your browser to sing live.";return}
+  an.fftSize=8192; // shorter analysis window: about half the delay, still fine for the voice range
+  srcNode=ctx.createMediaStreamSource(micStream);srcNode.connect(an);
+  const out=ctx.createGain();out.gain.value=0;out.connect(ctx.destination);const oscs=[];
+  voice(out,60,ctx.currentTime,1e5,oscs); // a long-held voice; liveSet moves its pitch and volume
+  live={out,oscs,midi:null};liveMode=true;liveCand="";liveN=0;
+  $("sing").classList.add("on");$("sing").textContent="Stop live";
+  start("Sing or hum. The harmonium follows you on the nearest key. Use headphones so the speaker doesn't feed back into the mic.");
+};
+
 function stopSource(){
+  if(liveMode)liveStop();
   if(raf){if(pending)resolveTap();closeOpen()}
   cancelAnimationFrame(raf);raf=0;setTimeout(setTapState);
   if(demoStop){demoStop();demoStop=null}
@@ -342,13 +374,14 @@ document.addEventListener("keydown",e=>{
 let spec,td;
 function detect(){
   const sr=ctx.sampleRate,bin=sr/an.fftSize;
-  if(!spec){spec=new Float32Array(an.frequencyBinCount);td=new Float32Array(an.fftSize)}
-  an.getFloatTimeDomainData(td);let rms=0;for(let i=0;i<td.length;i+=4)rms+=td[i]*td[i];rms=Math.sqrt(rms/(td.length/4));
+  if(!spec||spec.length!==an.frequencyBinCount){spec=new Float32Array(an.frequencyBinCount);td=new Float32Array(an.fftSize)}
+  an.getFloatTimeDomainData(td);let rms=0;for(let i=0;i<td.length;i+=4)rms+=td[i]*td[i];rms=Math.sqrt(rms/(td.length/4));lastRms=rms;
   $("level").style.width=Math.min(100,rms*400)+"%";
-  if(rms<0.008)return[];
+  if(rms<(liveMode?0.012:0.008))return[];
   an.getFloatFrequencyData(spec);
-  const lo=Math.floor(f(LOW-1)/bin),hi=Math.ceil(f(HIGH+1)/bin),H=4,found=[];
-  const maxN=$("chords").checked?3:1;let first=null;
+  const rLo=liveMode?40:LOW,rHi=liveMode?84:HIGH; // voices reach lower than the keyboard (E2..C6)
+  const lo=Math.floor(f(rLo-1)/bin),hi=Math.ceil(f(rHi+1)/bin),H=4,found=[];
+  const maxN=liveMode?1:($("chords").checked?3:1);let first=null;
   for(let n=0;n<maxN;n++){
     let best=-Infinity,bi=0;
     for(let i=lo;i<=hi;i++){let s=0;for(let h=1;h<=H;h++){const j=i*h;s+=j<spec.length?Math.max(spec[j],-120):-120}if(s>best){best=s;bi=i}}
@@ -356,7 +389,7 @@ function detect(){
     // refine with parabolic interpolation
     const a=spec[bi-1],b=spec[bi],c=spec[bi+1],p=(a-c)/(2*(a-2*b+c))||0;
     const freq=(bi+Math.max(-.5,Math.min(.5,p)))*bin,mf=69+12*Math.log2(freq/440),midi=Math.round(mf);
-    if(midi>=LOW&&midi<=HIGH&&!found.some(x=>x.midi===midi))found.push({midi,freq,cents:Math.round((mf-midi)*100)});
+    if(midi>=rLo&&midi<=rHi&&!found.some(x=>x.midi===midi))found.push({midi,freq,cents:Math.round((mf-midi)*100)});
     for(let h=1;h<=12;h++){const cc=Math.round(bi*h);for(let k=cc-3;k<=cc+3;k++)if(k>0&&k<spec.length)spec[k]=-140}
   }
   return found;
@@ -372,6 +405,11 @@ function loop(){
   if(!notes.length){silentN++;if(silentN===4&&mode()==="auto")closeOpen();if(silentN>8){showNotes([]);shown="";lastLogged=""}}
   else{silentN=0;lastHeard={notes,t:ctx.currentTime};
     if(candN>=5&&key!==shown){shown=key;showNotes(notes);if(mode()==="auto")addLog(notes)}else if(key===shown)updateTune(notes[0])}
+  if(live){ // switch key after 3 steady frames (~50 ms) so vibrato doesn't make it warble; fade out after 3 silent frames
+    if(notes.length){const m=notes[0].midi;if(String(m)===liveCand)liveN++;else{liveCand=String(m);liveN=1}
+      if(liveN>=3&&m!==live.midi)liveSet(m);else if(liveN>=3)live.out.gain.setTargetAtTime(Math.min(0.3,0.08+lastRms*3),ctx.currentTime,0.05)}
+    else if(silentN>=3&&live.midi!==null)liveSet(null);
+  }
   if(pending){ // the analyser hears a new note ~0.1–0.2 s late, so vote from 0.12 s to 0.35 s after the tap
     const age=ctx.currentTime-pending.t;
     if(notes.length&&age>=0.12){const v=pending.votes.get(key);pending.votes.set(key,{n:(v?v.n:0)+1,notes})}
