@@ -14,7 +14,8 @@
 <meta name="description" content="Play your harmonium and see every note as sargam and Western notation, live, with a transcript you can copy.">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Yatra+One&family=Inter:wght@400;600&family=JetBrains+Mono:wght@400;600&display=swap">
 <style>
-/* Layout: big live note "display" on top, harmonium keyboard in the middle, transcript strip below */
+/* Layout: mobile-first. One "stage" card owns the screen (live note + big Sing button), keyboard below,
+   recording tools folded into a disclosure underneath. */
 :root{
   --bg:#edf0f3; --surface:#ffffff; --ink:#1b2129; --muted:#5f6b78; --line:#d6dce3;
   --accent:#d9730d; --accent-soft:#fbe6cf; --key:#fbfaf7; --key-black:#232a33; --ok:#1f9a62; --off:#c43d3d;
@@ -30,118 +31,155 @@
   --accent:#f39a3d; --accent-soft:#3a2a18; --key:#d9d6cf; --key-black:#0b0e12; --ok:#3fd18c; --off:#ff6b6b; color-scheme:dark}
 *{box-sizing:border-box}
 body{background:var(--bg);color:var(--ink);font-family:var(--body);font-size:15px;line-height:1.5;
-  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:20px 40px}
-main{max-width:860px;margin:0 auto;display:flex;flex-direction:column;gap:16px}
-header{display:flex;flex-wrap:wrap;align-items:end;justify-content:space-between;gap:12px}
-h1{font-family:var(--display);font-weight:400;font-size:clamp(2rem,7vw,2.8rem);line-height:1;margin:0}
-h1 small{display:block;font-family:var(--body);font-size:14px;color:var(--muted);margin-top:6px}
-.panel{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:16px}
-.controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:12px 32px}
+main{max-width:680px;margin:0 auto;display:flex;flex-direction:column;gap:12px}
+header{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:48px}
+h1{font-family:var(--display);font-weight:400;font-size:1.7rem;line-height:1;margin:0}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:20px;padding:16px}
 button,.file,select{font:600 14px var(--body);border-radius:999px;padding:10px 16px;min-height:44px;border:1px solid var(--line);
-  background:transparent;color:var(--ink);cursor:pointer;display:inline-flex;align-items:center;gap:8px}
+  background:transparent;color:var(--ink);cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:8px;-webkit-tap-highlight-color:transparent}
 select{padding-right:10px}
-button:focus-visible,select:focus-visible,.file:focus-within,input:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+button:disabled{opacity:.45;cursor:not-allowed}
+button:focus-visible,select:focus-visible,.file:focus-within,input:focus-visible,summary:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
 .primary{background:var(--accent);border-color:var(--accent);color:#fff}
 .primary.on{background:var(--off);border-color:var(--off)}
+.file{position:relative}
 .file input{position:absolute;opacity:0;width:1px;height:1px}
-label.inline{display:inline-flex;align-items:center;gap:8px;font-size:14px;color:var(--muted)}
-.live{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;align-items:center}
-@media (max-width:560px){.live{grid-template-columns:1fr}}
-.note{text-align:center}
-.sargam{font-family:var(--display);font-size:clamp(4rem,20vw,7rem);line-height:1;min-height:1em;color:var(--accent)}
-.dev{font-family:var(--display);font-size:1.6rem;color:var(--muted);min-height:1.5em}
-.west{font-family:var(--mono);font-size:14px;color:var(--muted);font-variant-numeric:tabular-nums}
-.chord{font-family:var(--mono);font-size:13px;color:var(--ink);min-height:1.4em}
-.tuner{display:flex;flex-direction:column;gap:10px}
-.meter{position:relative;height:40px;border-radius:10px;background:linear-gradient(90deg,color-mix(in srgb,var(--off) 25%,transparent),color-mix(in srgb,var(--ok) 30%,transparent) 45% 55%,color-mix(in srgb,var(--off) 25%,transparent))}
-.meter i{position:absolute;top:4px;bottom:4px;width:4px;border-radius:2px;background:var(--ink);left:50%;transform:translateX(-50%);transition:left .08s}
-.meter::after{content:"";position:absolute;left:50%;top:0;bottom:0;width:1px;background:var(--muted)}
-.scale{display:flex;justify-content:space-between;font-family:var(--mono);font-size:11px;color:var(--muted)}
-.level{height:6px;border-radius:3px;background:var(--line);overflow:hidden}
-.level b{display:block;height:100%;width:0;background:var(--accent)}
-.status{font-size:13px;color:var(--muted);margin:0}
-.kb-wrap{overflow-x:auto;padding-bottom:4px}
-.kb{position:relative;display:flex;min-width:560px;height:150px;user-select:none}
-.w{flex:1;background:var(--key);border:1px solid var(--line);border-radius:0 0 8px 8px;position:relative;display:flex;align-items:end;justify-content:center;padding-bottom:6px;font-size:11px;color:#55606c;transition:background .08s}
-.b{position:absolute;top:0;height:60%;background:var(--key-black);border-radius:0 0 6px 6px;z-index:2;display:flex;align-items:end;justify-content:center;padding-bottom:4px;font-size:9px;color:#9aa4ae;transition:background .08s}
-.w.sa::before{content:"";position:absolute;top:10px;width:7px;height:7px;border-radius:50%;background:var(--accent)}
+.sa-pick{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--muted)}
+.sa-pick select{min-height:40px;padding:6px 10px;font-size:15px;color:var(--ink)}
+
+/* Stage */
+.stage{display:flex;flex-direction:column;align-items:center;gap:14px;padding:20px 16px 18px;text-align:center}
+.note{display:flex;flex-direction:column;align-items:center;min-height:9.5rem;justify-content:center}
+.sargam{font-family:var(--display);font-size:clamp(4.2rem,24vw,6.5rem);line-height:1;color:var(--accent)}
+.dev{font-family:var(--display);font-size:1.5rem;color:var(--muted);min-height:1.5em;line-height:1.4}
+.west{font-family:var(--mono);font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
+.chord{font-family:var(--mono);font-size:12px;min-height:1.2em}
+.tuner{width:100%;max-width:340px;display:flex;flex-direction:column;gap:4px}
+.meter{position:relative;height:12px;border-radius:6px;background:linear-gradient(90deg,color-mix(in srgb,var(--off) 30%,transparent),color-mix(in srgb,var(--ok) 40%,transparent) 42% 58%,color-mix(in srgb,var(--off) 30%,transparent))}
+.meter i{position:absolute;top:-3px;bottom:-3px;width:4px;border-radius:2px;background:var(--ink);left:50%;transform:translateX(-50%);transition:left .08s}
+.scale{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--muted)}
+.level{display:none}
+.sing{--lvl:0;width:136px;height:136px;border-radius:50%;flex-direction:column;gap:4px;border:0;background:var(--accent);color:#fff;font-size:15px;
+  box-shadow:0 0 0 calc(4px + var(--lvl)*22px) color-mix(in srgb,var(--accent) 22%,transparent);transition:box-shadow .08s,background .2s;touch-action:manipulation}
+.sing svg{width:38px;height:38px}
+.sing.on{background:var(--off);box-shadow:0 0 0 calc(4px + var(--lvl)*22px) color-mix(in srgb,var(--off) 22%,transparent)}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:999px;padding:3px;gap:2px}
+.seg label{position:relative}
+.seg input{position:absolute;opacity:0;inset:0;margin:0}
+.seg span{display:inline-flex;align-items:center;min-height:38px;padding:0 14px;border-radius:999px;font-size:13px;font-weight:600;color:var(--muted);cursor:pointer}
+.seg input:checked+span{background:var(--accent-soft);color:var(--ink)}
+.seg input:focus-visible+span{outline:3px solid var(--accent)}
+.status{font-size:13px;color:var(--muted);margin:0;max-width:40ch;min-height:2.6em}
+.hint{font-size:12px;color:var(--muted);margin:0}
+
+/* Keyboard: always fits the width; labels only where keys are wide enough */
+.kbp{padding:10px}
+.kb{position:relative;display:flex;height:92px;user-select:none}
+.w{flex:1;min-width:0;background:var(--key);border:1px solid var(--line);border-radius:0 0 6px 6px;position:relative;display:flex;align-items:end;justify-content:center;padding-bottom:4px;font-size:0;color:#55606c;transition:background .08s}
+.b{position:absolute;top:0;height:60%;background:var(--key-black);border-radius:0 0 4px 4px;z-index:2;display:flex;align-items:end;justify-content:center;padding-bottom:3px;font-size:0;color:#9aa4ae;transition:background .08s}
+.w.sa::before{content:"";position:absolute;bottom:8px;width:6px;height:6px;border-radius:50%;background:var(--accent)}
 .w.on,.b.on{background:var(--accent);color:#fff}
 .w.on2,.b.on2{background:color-mix(in srgb,var(--accent) 55%,var(--key))}
-.trans-head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px}
+@media (min-width:640px){.kb{height:130px}.w{font-size:11px}.b{font-size:9px}.w.sa::before{bottom:auto;top:10px}}
+
+/* Record & play back */
+details.panel{padding:0}
+summary{list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:16px;min-height:56px;font-weight:600}
+summary::-webkit-details-marker{display:none}
+summary small{display:block;font-weight:400;font-size:13px;color:var(--muted)}
+summary::after{content:"";width:9px;height:9px;border-right:2px solid var(--muted);border-bottom:2px solid var(--muted);transform:rotate(45deg);transition:transform .2s;flex:none;margin-right:4px}
+details[open] summary::after{transform:rotate(-135deg)}
+.rec{display:flex;flex-direction:column;gap:14px;padding:0 16px 16px}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.row>*{flex:1 1 auto}
+label.inline{display:inline-flex;align-items:center;gap:8px;font-size:14px;color:var(--muted)}
+.tap{width:100%;min-height:110px;border-radius:16px;flex-direction:column;gap:4px;font-size:1.15rem;
+  background:var(--accent-soft);border:2px dashed var(--accent);touch-action:manipulation;transition:background .06s}
+.tap small{font-weight:400;font-size:12px;color:var(--muted);text-align:center}
+.tap.hit{background:var(--accent);color:#fff}.tap.hit small{color:#fff}
+.trans-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
 .trans-head h2{font-size:15px;margin:0}
-.chips{display:flex;flex-wrap:wrap;gap:6px;min-height:40px;font-family:var(--display);font-size:1.15rem}
+.bpm{font-family:var(--mono);font-size:12px;font-weight:400;color:var(--muted)}
+.chips{display:flex;flex-wrap:wrap;gap:6px;min-height:40px;max-height:200px;overflow-y:auto;font-family:var(--display);font-size:1.1rem}
 .chips span{background:var(--accent-soft);border-radius:8px;padding:2px 10px;transition:background .08s,color .08s}
 .chips span.now{background:var(--accent);color:#fff}
-.tap{width:100%;min-height:120px;border-radius:14px;justify-content:center;flex-direction:column;gap:4px;font-size:1.25rem;
-  background:var(--accent-soft);border:2px dashed var(--accent);touch-action:manipulation;-webkit-tap-highlight-color:transparent;transition:background .06s}
-.tap small{font-weight:400;font-size:13px;color:var(--muted);text-align:center}
-.tap.hit{background:var(--accent);color:#fff}.tap.hit small{color:#fff}
-.bpm{font-family:var(--mono);font-size:12px;font-weight:400;color:var(--muted);margin-left:6px}
 .empty{font-family:var(--body);font-size:14px;color:var(--muted)}
-footer{font-size:12px;color:var(--muted);text-align:center}
+.sub{font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:0}
+footer{font-size:12px;color:var(--muted);text-align:center;padding-inline:8px}
+@media (prefers-reduced-motion:reduce){.sing,.meter i{transition:none}}
 </style>
 
 </head>
 <body>
 <main>
   <header>
-    <h1>Sur Catcher<small>Play your harmonium. See every sur, live.</small></h1>
-    <label class="inline" for="sa">Sa is
-      <select id="sa" aria-label="Choose your Sa key"></select>
-    </label>
+    <h1>Sur Catcher</h1>
+    <label class="sa-pick" for="sa">Sa <select id="sa" aria-label="Choose your Sa key"></select></label>
   </header>
 
-  <section class="panel controls" aria-label="Sound source">
-    <button class="primary" id="mic">Listen with mic</button>
-    <button class="primary" id="sing">Sing → Harmonium</button>
-    <select id="oct" aria-label="Harmonium octave for live mode"><option value="0" selected>Same octave</option><option value="-12">One octave lower</option><option value="12">One octave higher</option></select>
-    <button id="demo">Play demo</button>
-    <label class="file">Upload recording<input type="file" id="file" accept="audio/*"></label>
-    <label class="inline" for="mode">Catch
-      <select id="mode"><option value="tap" selected>when I tap</option><option value="auto">every note automatically</option></select>
-    </label>
-    <label class="inline" for="chords"><input type="checkbox" id="chords"> Catch chords (up to 3 keys)</label>
-  </section>
-
-  <section class="panel live" aria-live="polite">
-    <div class="note">
+  <section class="panel stage" aria-label="Live sing">
+    <div class="note" aria-live="polite">
       <div class="sargam" id="sargam">–</div>
       <div class="dev" id="dev">&nbsp;</div>
       <div class="west" id="west">Waiting for sound</div>
       <div class="chord" id="chord"></div>
     </div>
-    <div class="tuner">
-      <div class="meter" aria-label="Tuning offset"><i id="needle"></i></div>
-      <div class="scale"><span>-50¢</span><span>in tune</span><span>+50¢</span></div>
-      <div class="level" aria-hidden="true"><b id="level"></b></div>
-      <p class="status" id="status">Press "Play demo" to hear how it works, or "Listen with mic" and play.</p>
+    <div class="tuner" aria-hidden="true">
+      <div class="meter"><i id="needle"></i></div>
+      <div class="scale"><span>flat</span><span>in tune</span><span>sharp</span></div>
+      <div class="level"><b id="level"></b></div>
     </div>
+    <button class="sing" id="sing" aria-label="Start singing">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+      <span id="singlabel">Tap to sing</span>
+    </button>
+    <div class="seg" role="radiogroup" aria-label="Harmonium octave">
+      <label><input type="radio" name="oct" value="-12"><span>Lower</span></label>
+      <label><input type="radio" name="oct" value="0" checked><span>Same</span></label>
+      <label><input type="radio" name="oct" value="12"><span>Higher</span></label>
+    </div>
+    <p class="status" id="status">Sing or hum and the harmonium plays along on the nearest key.</p>
+    <p class="hint">Headphones stop the speaker echoing back into the mic.</p>
   </section>
 
-  <section class="panel" id="tapzone">
-    <button class="tap" id="tap" disabled>Tap on every note you play<small id="taphint">Start listening first, then tap here or press Space at the start of each note</small></button>
+  <section class="panel kbp">
+    <div class="kb" id="kb" aria-label="Harmonium keyboard, three octaves"></div>
   </section>
 
-  <section class="panel">
-    <div class="kb-wrap"><div class="kb" id="kb" aria-label="Harmonium keyboard, three octaves"></div></div>
-  </section>
-
-  <section class="panel">
-    <div class="trans-head">
-      <h2>Caught notes <span class="bpm" id="bpm"></span></h2>
-      <div class="controls">
+  <details class="panel" id="recpanel">
+    <summary><span>Record &amp; play back<small>Catch notes from your harmonium or voice and replay them in rhythm</small></span></summary>
+    <div class="rec">
+      <div class="row">
+        <button class="primary" id="mic">Listen to my harmonium</button>
+        <button id="demo">Play demo</button>
+        <label class="file">Upload<input type="file" id="file" accept="audio/*"></label>
+      </div>
+      <div class="row">
+        <label class="inline" for="mode">Catch
+          <select id="mode"><option value="tap" selected>when I tap</option><option value="auto">every note</option></select>
+        </label>
+        <label class="inline" for="chords"><input type="checkbox" id="chords"> Chords</label>
+      </div>
+      <div id="tapzone">
+        <button class="tap" id="tap" disabled>Tap on every note<small id="taphint">Start listening first, then tap here or press Space at the start of each note</small></button>
+      </div>
+      <div class="trans-head"><h2>Caught notes</h2><span class="bpm" id="bpm"></span></div>
+      <div class="chips" id="chips"><span class="empty">Notes you catch appear here as sargam.</span></div>
+      <div class="row">
         <button class="primary" id="play" disabled>Play back</button>
         <select id="speed" aria-label="Playback speed"><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.5">1.5×</option></select>
         <select id="rhythm" aria-label="Rhythm"><option value="snap" selected>Snap to beat</option><option value="free">As played</option></select>
-        <label class="inline" for="click"><input type="checkbox" id="click"> Click</label>
+      </div>
+      <div class="row">
+        <label class="inline" for="click"><input type="checkbox" id="click"> Metronome click</label>
         <button id="copy">Copy</button>
         <button id="clear">Clear</button>
       </div>
     </div>
-    <div class="chips" id="chips"><span class="empty">Notes you play appear here as sargam, ready to copy.</span></div>
-  </section>
+  </details>
 
-  <footer>Notation: .Ni = mandra saptak (lower), Sa' = taar saptak (upper), (k) komal, (t) tivra. Audio stays on your device.</footer>
+  <footer>.Ni = lower octave, Sa' = upper octave, (k) komal, (t) tivra. Audio stays on your device.</footer>
 </main>
 
 <script>
@@ -187,17 +225,22 @@ saSel.onchange=()=>{saPc=+saSel.value;try{localStorage.setItem("sur-sa",saPc)}ca
 // Audio graph
 let ctx,an,srcNode=null,micStream=null,demoStop=null,raf=0;
 const AC=()=>{if(!ctx){ctx=new (window.AudioContext||window.webkitAudioContext)();an=ctx.createAnalyser();an.fftSize=16384;an.smoothingTimeConstant=0.4}return ctx};
+// Keep the phone screen on while singing (ignored where unsupported)
+let wake=null;
+async function keepAwake(){try{wake=await navigator.wakeLock.request("screen")}catch(e){wake=null}}
+function releaseWake(){try{wake&&wake.release()}catch(e){}wake=null}
+
 // Live mode: the mic hears your voice and a harmonium voice follows it on the nearest key, in real time
 let liveMode=false,live=null,liveCand="",liveN=0,lastRms=0;
 function liveStop(){
   if(live){live.oscs.forEach(o=>{try{o.stop()}catch(e){}});live.out.disconnect();live=null}
-  liveMode=false;$("sing").classList.remove("on");$("sing").textContent="Sing → Harmonium";
+  liveMode=false;$("sing").classList.remove("on");$("singlabel").textContent="Tap to sing";$("sing").style.setProperty("--lvl",0);releaseWake();
   if(an&&an.fftSize!==16384)an.fftSize=16384;
 }
 function liveSet(midi){
   const now=ctx.currentTime;
   if(midi===null){live.out.gain.setTargetAtTime(0,now,0.06);live.midi=null;return}
-  const fr=f(midi+(+$("oct").value)),vol=Math.min(0.3,0.08+lastRms*3);
+  const fr=f(midi+(+document.querySelector('input[name="oct"]:checked').value)),vol=Math.min(0.3,0.08+lastRms*3);
   live.oscs.forEach(o=>o.frequency.setTargetAtTime(fr,now,live.midi===null?0.001:0.008)); // harmonium keys jump, they don't slide
   live.out.gain.setTargetAtTime(vol,now,live.midi===null?0.015:0.05);
   live.midi=midi;
@@ -212,8 +255,8 @@ $("sing").onclick=async()=>{
   const out=ctx.createGain();out.gain.value=0;out.connect(ctx.destination);const oscs=[];
   voice(out,60,ctx.currentTime,1e5,oscs); // a long-held voice; liveSet moves its pitch and volume
   live={out,oscs,midi:null};liveMode=true;liveCand="";liveN=0;
-  $("sing").classList.add("on");$("sing").textContent="Stop live";
-  start("Sing or hum. The harmonium follows you on the nearest key. Use headphones so the speaker doesn't feed back into the mic.");
+  $("sing").classList.add("on");$("singlabel").textContent="Stop";keepAwake();
+  start("Listening. Sing or hum and the harmonium follows you.");
 };
 
 function stopSource(){
@@ -224,16 +267,17 @@ function stopSource(){
   if(srcNode){try{srcNode.stop&&srcNode.stop()}catch(e){}try{srcNode.disconnect()}catch(e){}srcNode=null}
   if(micStream){micStream.getTracks().forEach(t=>t.stop());micStream=null}
   try{an&&an.disconnect()}catch(e){}
-  $("mic").classList.remove("on");$("mic").textContent="Listen with mic";$("demo").textContent="Play demo";
+  $("mic").classList.remove("on");$("mic").textContent="Listen to my harmonium";$("demo").textContent="Play demo";
   showNotes([]);
 }
-function start(status){$("status").textContent=status+(mode()==="tap"?" Tap on each note.":"");resetTracker();loop();setTapState()}
+function start(status){$("status").textContent=status+(mode()==="tap"&&!liveMode?" Tap on each note.":"");resetTracker();loop();setTapState()}
 
 $("mic").onclick=async()=>{
   if(micStream){stopSource();$("status").textContent="Stopped listening.";return}
   stopSource();AC();await ctx.resume();
   try{micStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false}})}
   catch(e){$("status").textContent="Microphone is blocked here. Allow mic access in your browser, or upload a recording.";return}
+  $("recpanel").open=true;
   srcNode=ctx.createMediaStreamSource(micStream);srcNode.connect(an);
   $("mic").classList.add("on");$("mic").textContent="Stop listening";
   start("Listening. Play one key at a time for the cleanest result.");
@@ -264,7 +308,7 @@ $("demo").onclick=async()=>{
   const timer=setTimeout(()=>{if(demoStop){stopSource();$("status").textContent="Demo finished. Try it with your own harmonium."}},(ct-ctx.currentTime+2.4)*1000);
   demoStop=()=>{clearTimeout(timer);oscs.forEach(o=>{try{o.stop()}catch(e){}});out.disconnect()};
   $("demo").textContent="Stop demo";
-  if(!$("chords").checked)$("status").textContent="Tip: tick \"Catch chords\" to see the final chord's three keys.";
+  if(!$("chords").checked)$("status").textContent="Tip: tick \"Chords\" to see the final chord's three keys.";
   start("Playing demo: Sa Re Ga Ma Pa Dha Ni Sa' and back, then a chord.");
 };
 
@@ -376,7 +420,7 @@ function detect(){
   const sr=ctx.sampleRate,bin=sr/an.fftSize;
   if(!spec||spec.length!==an.frequencyBinCount){spec=new Float32Array(an.frequencyBinCount);td=new Float32Array(an.fftSize)}
   an.getFloatTimeDomainData(td);let rms=0;for(let i=0;i<td.length;i+=4)rms+=td[i]*td[i];rms=Math.sqrt(rms/(td.length/4));lastRms=rms;
-  $("level").style.width=Math.min(100,rms*400)+"%";
+  $("level").style.width=Math.min(100,rms*400)+"%";if(liveMode)$("sing").style.setProperty("--lvl",Math.min(1,rms*8).toFixed(2));
   if(rms<(liveMode?0.012:0.008))return[];
   an.getFloatFrequencyData(spec);
   const rLo=liveMode?40:LOW,rHi=liveMode?84:HIGH; // voices reach lower than the keyboard (E2..C6)
