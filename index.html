@@ -72,6 +72,11 @@ label.inline{display:inline-flex;align-items:center;gap:8px;font-size:14px;color
 .chips{display:flex;flex-wrap:wrap;gap:6px;min-height:40px;font-family:var(--display);font-size:1.15rem}
 .chips span{background:var(--accent-soft);border-radius:8px;padding:2px 10px;transition:background .08s,color .08s}
 .chips span.now{background:var(--accent);color:#fff}
+.tap{width:100%;min-height:120px;border-radius:14px;justify-content:center;flex-direction:column;gap:4px;font-size:1.25rem;
+  background:var(--accent-soft);border:2px dashed var(--accent);touch-action:manipulation;-webkit-tap-highlight-color:transparent;transition:background .06s}
+.tap small{font-weight:400;font-size:13px;color:var(--muted);text-align:center}
+.tap.hit{background:var(--accent);color:#fff}.tap.hit small{color:#fff}
+.bpm{font-family:var(--mono);font-size:12px;font-weight:400;color:var(--muted);margin-left:6px}
 .empty{font-family:var(--body);font-size:14px;color:var(--muted)}
 footer{font-size:12px;color:var(--muted);text-align:center}
 </style>
@@ -90,6 +95,9 @@ footer{font-size:12px;color:var(--muted);text-align:center}
     <button class="primary" id="mic">Listen with mic</button>
     <button id="demo">Play demo</button>
     <label class="file">Upload recording<input type="file" id="file" accept="audio/*"></label>
+    <label class="inline" for="mode">Catch
+      <select id="mode"><option value="tap" selected>when I tap</option><option value="auto">every note automatically</option></select>
+    </label>
     <label class="inline" for="chords"><input type="checkbox" id="chords"> Catch chords (up to 3 keys)</label>
   </section>
 
@@ -108,16 +116,22 @@ footer{font-size:12px;color:var(--muted);text-align:center}
     </div>
   </section>
 
+  <section class="panel" id="tapzone">
+    <button class="tap" id="tap" disabled>Tap on every note you play<small id="taphint">Start listening first, then tap here or press Space at the start of each note</small></button>
+  </section>
+
   <section class="panel">
     <div class="kb-wrap"><div class="kb" id="kb" aria-label="Harmonium keyboard, three octaves"></div></div>
   </section>
 
   <section class="panel">
     <div class="trans-head">
-      <h2>Caught notes</h2>
+      <h2>Caught notes <span class="bpm" id="bpm"></span></h2>
       <div class="controls">
         <button class="primary" id="play" disabled>Play back</button>
         <select id="speed" aria-label="Playback speed"><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.5">1.5×</option></select>
+        <select id="rhythm" aria-label="Rhythm"><option value="snap" selected>Snap to beat</option><option value="free">As played</option></select>
+        <label class="inline" for="click"><input type="checkbox" id="click"> Click</label>
         <button id="copy">Copy</button>
         <button id="clear">Clear</button>
       </div>
@@ -172,8 +186,8 @@ saSel.onchange=()=>{saPc=+saSel.value;try{localStorage.setItem("sur-sa",saPc)}ca
 let ctx,an,srcNode=null,micStream=null,demoStop=null,raf=0;
 const AC=()=>{if(!ctx){ctx=new (window.AudioContext||window.webkitAudioContext)();an=ctx.createAnalyser();an.fftSize=16384;an.smoothingTimeConstant=0.4}return ctx};
 function stopSource(){
-  if(raf)closeOpen();
-  cancelAnimationFrame(raf);raf=0;
+  if(raf){if(pending)resolveTap();closeOpen()}
+  cancelAnimationFrame(raf);raf=0;setTimeout(setTapState);
   if(demoStop){demoStop();demoStop=null}
   if(srcNode){try{srcNode.stop&&srcNode.stop()}catch(e){}try{srcNode.disconnect()}catch(e){}srcNode=null}
   if(micStream){micStream.getTracks().forEach(t=>t.stop());micStream=null}
@@ -181,7 +195,7 @@ function stopSource(){
   $("mic").classList.remove("on");$("mic").textContent="Listen with mic";$("demo").textContent="Play demo";
   showNotes([]);
 }
-function start(status){$("status").textContent=status;resetTracker();loop()}
+function start(status){$("status").textContent=status+(mode()==="tap"?" Tap on each note.":"");resetTracker();loop();setTapState()}
 
 $("mic").onclick=async()=>{
   if(micStream){stopSource();$("status").textContent="Stopped listening.";return}
@@ -241,24 +255,88 @@ $("play").onclick=async()=>{
   const items=log.filter(e=>e.d>0.05);
   if(!items.length){$("status").textContent="Nothing to play yet.";return}
   AC();await ctx.resume();
-  const speed=+$("speed").value,out=ctx.createGain();out.gain.value=0.2;out.connect(ctx.destination);
+  const speed=+$("speed").value,snap=$("rhythm").value==="snap";
+  const {plan,beat}=schedule(items,snap);
+  const out=ctx.createGain();out.gain.value=0.2;out.connect(ctx.destination);
   const start=ctx.currentTime+0.15,oscs=[],timers=[],chipEls=$("chips").children;
-  let at=0,prevEnd=items[0].t;
-  items.forEach(e=>{
-    at+=Math.min(Math.max(0,e.t-prevEnd),2)/speed; // keep real gaps, cap long silences at 2 s
-    const len=Math.min(e.d,6)/speed;
-    e.notes.forEach(m=>voice(out,m,start+at,len,oscs));
-    const idx=log.indexOf(e),on=at,off=at+len;
+  let end=0;
+  plan.forEach(({e,on,len})=>{
+    on/=speed;len/=speed;end=Math.max(end,on+len);
+    e.notes.forEach(m=>voice(out,m,start+on,len,oscs));
+    const idx=log.indexOf(e);
     timers.push(setTimeout(()=>{chipEls[idx]&&chipEls[idx].classList.add("now");showNotes(e.notes.map(m=>({midi:m,freq:f(m),cents:0})))},(on+.15)*1000));
-    timers.push(setTimeout(()=>{chipEls[idx]&&chipEls[idx].classList.remove("now")},(off+.15)*1000));
-    at+=len;prevEnd=e.t+e.d;
+    timers.push(setTimeout(()=>{chipEls[idx]&&chipEls[idx].classList.remove("now")},(on+len+.15)*1000));
   });
-  timers.push(setTimeout(()=>{stopPlayback();$("status").textContent="Playback finished."},(at+.4)*1000));
+  if($("click").checked&&beat){ // metronome: accent every 4th beat
+    const b=beat/speed;for(let i=0,t=0;t<end+.01;i++,t=i*b)click(out,start+t,i%4===0,oscs);
+  }
+  timers.push(setTimeout(()=>{stopPlayback();$("status").textContent="Playback finished."},(end+.4)*1000));
   pbStop=()=>{timers.forEach(clearTimeout);oscs.forEach(o=>{try{o.stop()}catch(e){}});out.disconnect();
     [...chipEls].forEach(c=>c.classList.remove("now"));showNotes([]);$("play").textContent="Play back"};
   $("play").textContent="Stop playback";
-  $("status").textContent=`Playing ${items.length} notes at ${speed}× in your rhythm.`;
+  $("status").textContent=`Playing ${items.length} notes at ${speed}×`+(beat?`, about ${Math.round(60/beat*speed)} BPM`:"")+(snap?", snapped to the beat.":", as played.");
 };
+
+// Tempo: the beat is the most common gap between note starts (median), clamped to 40–300 BPM.
+function estimateBeat(items){
+  const g=[];for(let i=1;i<items.length;i++){const d=items[i].t-items[i-1].t;if(d>0.12&&d<2.5)g.push(d)}
+  if(g.length<2)return 0;g.sort((a,b)=>a-b);
+  const med=g[Math.floor(g.length/2)];
+  // refine: average the gaps that are close to the median
+  const near=g.filter(x=>Math.abs(x-med)<med*0.2),beat=near.reduce((s,x)=>s+x,0)/near.length;
+  return Math.min(1.5,Math.max(0.2,beat));
+}
+// Build playback times. Snap mode puts each note start on a half-beat grid and keeps notes from overlapping.
+function schedule(items,snap){
+  const beat=estimateBeat(items),t0=items[0].t;
+  if(!snap||!beat){
+    let at=0,prevEnd=t0;const plan=[];
+    items.forEach(e=>{at+=Math.min(Math.max(0,e.t-prevEnd),2);const len=Math.min(e.d,6);plan.push({e,on:at,len});at+=len;prevEnd=e.t+e.d});
+    return {plan,beat};
+  }
+  const grid=beat/2,plan=[];let prev=-grid,shift=0;
+  items.forEach(e=>{
+    let q=Math.round((e.t-t0)/grid)*grid-shift;
+    if(q<=prev)q=prev+grid;
+    if(q-prev>beat*4){shift+=q-prev-beat*2;q=prev+beat*2} // squeeze long silences to 2 beats
+    plan.push({e,on:q,len:Math.max(grid,Math.round(Math.min(e.d,6)/grid)*grid)});prev=q;
+  });
+  for(let i=0;i<plan.length-1;i++)plan[i].len=Math.min(plan[i].len,plan[i+1].on-plan[i].on);
+  return {plan,beat};
+}
+function click(dest,t,accent,list){
+  const o=ctx.createOscillator(),g=ctx.createGain();o.frequency.value=accent?1600:1000;
+  g.gain.setValueAtTime(accent?.9:.5,t);g.gain.exponentialRampToValueAtTime(.001,t+.04);
+  o.connect(g);g.connect(dest);o.start(t);o.stop(t+.05);list.push(o);
+}
+
+// Tap mode: the tap marks the exact moment a note starts; the note is whatever is heard around that moment.
+const mode=()=>$("mode").value;
+let pending=null,lastHeard=null;
+function setTapState(){
+  $("tapzone").hidden=mode()!=="tap";
+  $("tap").disabled=!raf;
+  $("taphint").textContent=raf?"Tap here or press Space at the start of each note":"Start listening first, then tap here or press Space at the start of each note";
+}
+$("mode").onchange=setTapState;
+function tap(){
+  if(!raf||mode()!=="tap")return;
+  if(pending)resolveTap();
+  pending={t:ctx.currentTime,votes:new Map()};
+  const b=$("tap");b.classList.add("hit");setTimeout(()=>b.classList.remove("hit"),90);
+}
+function resolveTap(){
+  let best=null;pending.votes.forEach(v=>{if(!best||v.n>best.n)best=v});
+  const notes=best?best.notes:(lastHeard&&ctx.currentTime-lastHeard.t<0.3?lastHeard.notes:null);
+  if(notes)addLog(notes,pending.t,false);else $("status").textContent="No note heard at that tap. Tap as you press the key.";
+  pending=null;
+}
+$("tap").addEventListener("pointerdown",e=>{e.preventDefault();tap()});
+$("tap").addEventListener("click",e=>{if(e.detail===0)tap()}); // keyboard activation
+document.addEventListener("keydown",e=>{
+  if(e.code!=="Space"||e.repeat||["BUTTON","SELECT","INPUT"].includes(e.target.tagName))return;
+  if(mode()==="tap"&&raf){e.preventDefault();tap()}
+});
 
 // Pitch detection: harmonic sum over the log spectrum, with iterative harmonic removal for chords
 let spec,td;
@@ -291,8 +369,14 @@ function resetTracker(){cand="";candN=0;shown="";silentN=0;lastLogged=""}
 function loop(){
   const notes=detect(),key=notes.map(n=>n.midi).sort().join(",");
   if(key===cand)candN++;else{cand=key;candN=1}
-  if(!notes.length){silentN++;if(silentN===4)closeOpen();if(silentN>8){showNotes([]);shown="";lastLogged=""}}
-  else{silentN=0;if(candN>=5&&key!==shown){shown=key;showNotes(notes);addLog(notes)}else if(key===shown)updateTune(notes[0])}
+  if(!notes.length){silentN++;if(silentN===4&&mode()==="auto")closeOpen();if(silentN>8){showNotes([]);shown="";lastLogged=""}}
+  else{silentN=0;lastHeard={notes,t:ctx.currentTime};
+    if(candN>=5&&key!==shown){shown=key;showNotes(notes);if(mode()==="auto")addLog(notes)}else if(key===shown)updateTune(notes[0])}
+  if(pending){ // the analyser hears a new note ~0.1–0.2 s late, so vote from 0.12 s to 0.35 s after the tap
+    const age=ctx.currentTime-pending.t;
+    if(notes.length&&age>=0.12){const v=pending.votes.get(key);pending.votes.set(key,{n:(v?v.n:0)+1,notes})}
+    if(age>=0.35)resolveTap();
+  }
   raf=requestAnimationFrame(loop);
 }
 function showNotes(notes){
@@ -311,20 +395,25 @@ function updateTune(n){
 // Each caught note stores when it started and how long it lasted (seconds), so playback keeps the rhythm.
 // Detection confirms a note ~5 frames after it starts, so start times are shifted back by that lag.
 let open=null;
-function closeOpen(){if(open){open.d=Math.max(0.05,ctx.currentTime-0.08-open.t);open=null;updatePlay()}}
-function addLog(notes){
-  const k=notes.map(n=>n.midi).join("+");if(k===lastLogged)return;lastLogged=k;
-  closeOpen();
-  open={notes:notes.map(n=>n.midi),t:ctx.currentTime-0.08,d:0};
+// In tap mode a note lasts until the next tap (or until you stop listening), so held notes keep their length.
+function closeOpen(end){if(open){open.d=Math.max(0.05,Math.min(6,(end??ctx.currentTime-0.08)-open.t));open=null;updatePlay()}}
+function addLog(notes,t,dedupe=true){
+  const k=notes.map(n=>n.midi).join("+");if(dedupe&&k===lastLogged)return;lastLogged=k;
+  if(t===undefined)t=ctx.currentTime-0.08;
+  closeOpen(t);
+  open={notes:notes.map(n=>n.midi),t,d:0};
   log.push(open);if(log.length>300)log.shift();renderChips();
 }
-function updatePlay(){$("play").disabled=!log.some(e=>e.d>0.05)}
+function updatePlay(){
+  $("play").disabled=!log.some(e=>e.d>0.05);
+  const b=estimateBeat(log);$("bpm").textContent=b?`≈ ${Math.round(60/b)} BPM`:"";
+}
 function renderChips(){
   const c=$("chips");c.textContent="";
   if(!log.length){const e=document.createElement("span");e.className="empty";e.textContent="Notes you play appear here as sargam, ready to copy.";c.appendChild(e);return}
   log.forEach(e=>{const s=document.createElement("span");s.textContent=e.notes.map(m=>sargamOf(m).label).join("+");c.appendChild(s)});
 }
-$("clear").onclick=()=>{stopPlayback();log.length=0;lastLogged="";open=null;renderChips();updatePlay()};
+$("clear").onclick=()=>{stopPlayback();log.length=0;lastLogged="";open=null;pending=null;renderChips();updatePlay()};
 $("copy").onclick=async()=>{
   const text=log.map(e=>e.notes.map(m=>sargamOf(m).label).join("+")).join(" ");
   if(!text){$("status").textContent="Nothing to copy yet.";return}
@@ -332,6 +421,7 @@ $("copy").onclick=async()=>{
   catch(e){const r=document.createRange();r.selectNodeContents($("chips"));const sel=getSelection();sel.removeAllRanges();sel.addRange(r);$("status").textContent="Selected. Press Ctrl+C to copy."}
 };
 if(!navigator.mediaDevices){$("mic").disabled=true}
+setTapState();
 })();
 </script>
 
