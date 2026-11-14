@@ -70,6 +70,10 @@ button:focus-visible,select:focus-visible,.file:focus-within,input:focus-visible
 .seg span{display:inline-flex;align-items:center;min-height:38px;padding:0 14px;border-radius:999px;font-size:13px;font-weight:600;color:var(--muted);cursor:pointer}
 .seg input:checked+span{background:var(--accent-soft);color:var(--ink)}
 .seg input:focus-visible+span{outline:3px solid var(--accent)}
+.opts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;width:100%;max-width:420px}
+.opts label{display:flex;flex-direction:column;gap:4px;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);text-align:left;min-width:0}
+.opts select{width:100%;min-width:0;padding:8px 4px 8px 8px;font-size:13px;gap:2px;letter-spacing:0;text-transform:none;color:var(--ink);border-radius:12px}
+.w.out{background:color-mix(in srgb,var(--key) 50%,var(--line))}.b.out{opacity:.4}
 .status{font-size:13px;color:var(--muted);margin:0;max-width:40ch;min-height:2.6em}
 .hint{font-size:12px;color:var(--muted);margin:0}
 
@@ -139,6 +143,11 @@ footer{font-size:12px;color:var(--muted);text-align:center;padding-inline:8px}
       <label><input type="radio" name="oct" value="0" checked><span>Same</span></label>
       <label><input type="radio" name="oct" value="12"><span>Higher</span></label>
     </div>
+    <div class="opts">
+      <label for="steady">Steadiness<select id="steady"><option value="quick">Quick</option><option value="balanced" selected>Balanced</option><option value="steady">Steady</option></select></label>
+      <label for="scale">Scale<select id="scale"><option value="off" selected>All notes</option><option value="bilawal">Bilawal</option><option value="kalyan">Yaman</option><option value="khamaj">Khamaj</option><option value="kafi">Kafi</option><option value="asavari">Asavari</option><option value="bhairavi">Bhairavi</option><option value="bhairav">Bhairav</option><option value="marwa">Marwa</option><option value="purvi">Purvi</option><option value="todi">Todi</option></select></label>
+      <label for="drone">Drone<select id="drone"><option value="off" selected>Off</option><option value="sa">Sa</option><option value="pa">Sa + Pa</option><option value="ma">Sa + Ma</option></select></label>
+    </div>
     <p class="status" id="status">Sing or hum and the harmonium plays along on the nearest key.</p>
     <p class="hint">Headphones stop the speaker echoing back into the mic.</p>
   </section>
@@ -206,6 +215,7 @@ function sargamOf(midi){
 }
 
 // Keyboard
+var folReady=false; // set once the scale tables below exist
 const kb=$("kb"), keyEls={};
 function buildKeyboard(){
   kb.innerHTML="";
@@ -216,11 +226,12 @@ function buildKeyboard(){
     el.className=black?"b":"w";el.dataset.midi=m;el.textContent=SHORT[s.pc];el.title=WEST[m%12]+(Math.floor(m/12)-1)+" · "+s.label;
     if(black){const prev=whites.indexOf(m-1);el.style.left=((prev+1)*ww-ww*0.3)+"%";el.style.width=(ww*0.6)+"%"}
     if(s.pc===0)el.classList.add("sa");
+    if(folReady&&!allowed(m))el.classList.add("out");
     kb.appendChild(el);keyEls[m]=el;
   }
 }
 buildKeyboard();
-saSel.onchange=()=>{saPc=+saSel.value;try{localStorage.setItem("sur-sa",saPc)}catch(e){}buildKeyboard();renderChips()};
+saSel.onchange=()=>{saPc=+saSel.value;try{localStorage.setItem("sur-sa",saPc)}catch(e){}buildKeyboard();renderChips();if(liveMode)droneUpdate()};
 
 // Audio graph
 let ctx,an,srcNode=null,micStream=null,demoStop=null,raf=0;
@@ -231,10 +242,10 @@ async function keepAwake(){try{wake=await navigator.wakeLock.request("screen")}c
 function releaseWake(){try{wake&&wake.release()}catch(e){}wake=null}
 
 // Live mode: the mic hears your voice and a harmonium voice follows it on the nearest key, in real time
-let liveMode=false,live=null,liveCand="",liveN=0,lastRms=0;
+let liveMode=false,live=null,lastRms=0;
 function liveStop(){
   if(live){const l=live;if(l.cur)releaseReed(l.cur,ctx.currentTime,0.08);setTimeout(()=>l.out.disconnect(),400);live=null}
-  liveMode=false;$("sing").classList.remove("on");$("singlabel").textContent="Tap to sing";$("sing").style.setProperty("--lvl",0);releaseWake();
+  liveMode=false;droneUpdate();$("sing").classList.remove("on");$("singlabel").textContent="Tap to sing";$("sing").style.setProperty("--lvl",0);releaseWake();
   if(an&&an.fftSize!==16384)an.fftSize=16384;
 }
 function liveSet(midi){
@@ -256,7 +267,7 @@ $("sing").onclick=async()=>{
   an.fftSize=8192; // shorter analysis window: about half the delay, still fine for the voice range
   srcNode=ctx.createMediaStreamSource(micStream);srcNode.connect(an);
   const out=ctx.createGain();out.gain.value=0;out.connect(ctx.destination);
-  live={out,cur:null,midi:null};liveMode=true;liveCand="";liveN=0;
+  live={out,cur:null,midi:null};liveMode=true;folReset();droneUpdate();
   $("sing").classList.add("on");$("singlabel").textContent="Stop";keepAwake();
   start("Listening. Sing or hum and the harmonium follows you.");
 };
@@ -314,10 +325,10 @@ $("demo").onclick=async()=>{
   start("Playing demo: Sa Re Ga Ma Pa Dha Ni Sa' and back, then a chord.");
 };
 
-// Harmonium sound: real recordings of a 42-key harmonium (C2..F5), one file per key (G3 and G#3 borrow a neighbour).
+// Harmonium sound: real recordings of a 42-key harmonium (C2..F5), one file per key (G3 borrows a neighbour).
 // Each file is the key's attack plus ~2.8 s of steady tone; the steady part loops for as long as a note is held.
 // SAMPLE_F is each recording's measured pitch, so playback can be tuned to exact pitch.
-const SAMPLE_F={"36":65.84,"37":69.67,"38":73.96,"39":78.18,"40":82.9,"41":87.59,"42":92.84,"43":98.56,"44":104.58,"45":110.6,"46":117.07,"47":124.03,"48":131.15,"49":139.13,"50":146.79,"51":155.84,"52":165.52,"53":175.18,"54":186.05,"57":221.2,"58":234.15,"59":248.7,"60":262.3,"61":279.07,"62":294.48,"63":311.69,"64":333.33,"65":350.36,"66":372.09,"67":393.44,"68":417.39,"69":440.37,"70":466.02,"71":494.85,"72":527.47,"73":558.14,"74":592.59,"75":623.38,"76":666.67,"77":705.88};
+const SAMPLE_F={"36":65.84,"37":69.67,"38":73.96,"39":78.18,"40":82.9,"41":87.59,"42":92.84,"43":98.56,"44":104.58,"45":110.6,"46":117.07,"47":124.03,"48":131.15,"49":139.13,"50":146.79,"51":155.84,"52":165.52,"53":175.18,"54":186.05,"56":208.7,"57":221.2,"58":235.29,"59":248.7,"60":262.3,"61":279.07,"62":296.3,"63":313.73,"64":333.33,"65":350.36,"66":372.09,"67":393.44,"68":417.39,"69":440.37,"70":466.02,"71":494.85,"72":527.47,"73":558.14,"74":592.59,"75":623.38,"76":666.67,"77":705.88};
 const samples={};let sampleBytes=null,samplesReady=null;
 function prefetchSamples(){ // download early (no audio context needed), decode on first use
   if(!sampleBytes)sampleBytes=Object.fromEntries(Object.keys(SAMPLE_F).map(m=>[m,fetch("samples/"+m+".m4a").then(r=>r.ok?r.arrayBuffer():null).catch(()=>null)]));
@@ -464,7 +475,7 @@ function detect(){
   if(!spec||spec.length!==an.frequencyBinCount){spec=new Float32Array(an.frequencyBinCount);td=new Float32Array(an.fftSize)}
   an.getFloatTimeDomainData(td);let rms=0;for(let i=0;i<td.length;i+=4)rms+=td[i]*td[i];rms=Math.sqrt(rms/(td.length/4));lastRms=rms;
   $("level").style.width=Math.min(100,rms*400)+"%";if(liveMode)$("sing").style.setProperty("--lvl",Math.min(1,rms*8).toFixed(2));
-  if(rms<(liveMode?0.012:0.008))return[];
+  if(rms<(liveMode?(drone?0.02:0.012):0.008))return[];
   const rLo=liveMode?40:LOW,rHi=liveMode?84:HIGH; // voices reach lower than the keyboard (E2..C6)
   if(liveMode||!$("chords").checked){ // single note: time-domain YIN, much better at the right octave for reeds and voices
     const fr=yinPitch(td,sr);if(!fr)return[];
@@ -503,20 +514,83 @@ function yinPitch(td,sr){
   return fs/(tau+Math.max(-.5,Math.min(.5,p)));
 }
 
+// Steadiness: decides when the harmonium changes key, so the natural wobbles of a voice don't.
+//  win    – median of the sung pitch over this window (flattens vibrato and blips)
+//  hold   – a new key must win for this long before the harmonium switches (stops slides and scoops)
+//  onset  – shorter hold for the first note after a pause, so starting feels immediate
+//  sticky – extra semitones past the midpoint needed to leave the current key (stops flip-flopping)
+//  gap    – silences shorter than this keep the note sounding (consonants, breaths)
+//  glide  – while the pitch moves faster than this (semitones/s) no switch happens; it waits to land
+const STEADY={quick:{win:.06,hold:.07,onset:.05,sticky:.1,gap:.12,glide:14},
+  balanced:{win:.12,hold:.14,onset:.08,sticky:.2,gap:.25,glide:9},
+  steady:{win:.2,hold:.24,onset:.11,sticky:.3,gap:.4,glide:6}};
+// Scale lock: allowed notes per thaat, as semitones above Sa
+const THAAT={off:[0,1,2,3,4,5,6,7,8,9,10,11],bilawal:[0,2,4,5,7,9,11],kalyan:[0,2,4,6,7,9,11],khamaj:[0,2,4,5,7,9,10],
+  kafi:[0,2,3,5,7,9,10],asavari:[0,2,3,5,7,8,10],bhairavi:[0,1,3,5,7,8,10],bhairav:[0,1,4,5,7,8,11],
+  marwa:[0,1,4,6,7,9,11],purvi:[0,1,4,6,7,8,11],todi:[0,1,3,6,7,8,11]};
+const allowed=m=>THAAT[$("scale").value].includes(((m-60-saPc)%12+12)%12);
+function snapScale(x){const r=Math.round(x);let best=r,bd=99;for(let m=r-3;m<=r+3;m++){if(!allowed(m))continue;const d=Math.abs(m-x);if(d<bd){bd=d;best=m}}return best}
+let fol=null;
+function folReset(){fol={hist:[],cur:null,cand:null,since:0,gapSince:null}} // cand: null while on the current key
+function follow(notes,now){
+  const P=STEADY[$("steady").value];
+  if(!notes.length){
+    if(fol.gapSince===null)fol.gapSince=now;
+    if(fol.cur!==null&&now-fol.gapSince>P.gap){fol.cur=null;fol.cand=null;fol.hist.length=0;liveSet(null);showNotes([]);if(mode()==="auto")closeOpen()}
+    return;
+  }
+  fol.gapSince=null;
+  const x=69+12*Math.log2(notes[0].freq/440);
+  fol.hist.push({t:now,x});while(now-fol.hist[0].t>Math.max(P.win,0.1))fol.hist.shift();
+  const w=fol.hist.filter(h=>now-h.t<=P.win).map(h=>h.x).sort((a,b)=>a-b),med=w[Math.floor(w.length/2)];
+  const o=fol.hist[0],span=now-o.t,moving=span>0.03&&Math.abs(x-o.x)/span>P.glide;
+  let target=snapScale(med);
+  if(fol.cur!==null&&target!==fol.cur&&Math.abs(med-fol.cur)<Math.abs(target-fol.cur)/2+P.sticky)target=fol.cur;
+  if(target===fol.cur){fol.cand=null;liveVol(now);showLive(target,med);return}
+  // time the hold from when the voice left the current key, so a voice wavering between two
+  // neighbouring keys still moves off the old one; it lands on whichever key is winning then
+  if(fol.cand===null)fol.since=now;fol.cand=target;
+  let hold=fol.cur===null?P.onset:P.hold;
+  if(fol.cur!==null&&Math.abs(target-fol.cur)>=10)hold*=3; // octave lock: an octave jump must be held 3× longer
+  if(!moving&&now-fol.since>=hold){
+    fol.cur=target;fol.cand=null;liveSet(target);showLive(target,med);
+    if(mode()==="auto")addLog([{midi:target}]);
+  }
+}
+function liveVol(now){live.out.gain.setTargetAtTime(Math.min(0.3,0.08+lastRms*3),now,0.05)}
+// Show the key the harmonium is playing; the tuner shows how far the voice is from it
+function showLive(key,med){
+  if(shown!==String(key)){shown=String(key);showNotes([{midi:key,freq:f(med),cents:Math.round((med-key)*100)}])}
+  else updateTune({midi:key,freq:f(med),cents:Math.round((med-key)*100)});
+}
+
+// Drone: Sa (with lower Pa or Ma) held underneath while singing, like a harmonium's drone stops
+let drone=null;
+function droneUpdate(){
+  if(drone){const d=drone;d.reeds.forEach(r=>releaseReed(r,ctx.currentTime,0.3));setTimeout(()=>d.g.disconnect(),700);drone=null}
+  const v=$("drone").value;if(!liveMode||v==="off")return;
+  const g=ctx.createGain();g.gain.value=0.0001;g.connect(ctx.destination);g.gain.setTargetAtTime(0.09,ctx.currentTime,0.3);
+  const sa=48+saPc,keys=[sa];if(v==="pa")keys.push(sa-5);if(v==="ma")keys.push(sa-7);
+  drone={g,reeds:keys.map(k=>startReed(g,k,ctx.currentTime))};
+}
+// Remember choices on this device
+["steady","scale","drone"].forEach(id=>{
+  try{const v=localStorage.getItem("sur-"+id);if(v&&[...$(id).options].some(o=>o.value===v))$(id).value=v}catch(e){}
+  $(id).addEventListener("change",()=>{try{localStorage.setItem("sur-"+id,$(id).value)}catch(e){}
+    if(id==="scale")buildKeyboard();if(id==="drone")droneUpdate();if(fol)fol.cand=null});
+});
+folReady=true;buildKeyboard();
+
 // Note stability and transcript
 let cand="",candN=0,shown="",silentN=0,lastLogged="";const log=[];
 function resetTracker(){cand="";candN=0;shown="";silentN=0;lastLogged=""}
 function loop(){
   const notes=detect(),key=notes.map(n=>n.midi).sort().join(",");
   if(key===cand)candN++;else{cand=key;candN=1}
-  if(!notes.length){silentN++;if(silentN===4&&mode()==="auto")closeOpen();if(silentN>8){showNotes([]);shown="";lastLogged=""}}
-  else{silentN=0;lastHeard={notes,t:ctx.currentTime};
-    if(candN>=5&&key!==shown){shown=key;showNotes(notes);if(mode()==="auto")addLog(notes)}else if(key===shown)updateTune(notes[0])}
-  if(live){ // switch key after 3 steady frames (~50 ms) so vibrato doesn't make it warble; fade out after 3 silent frames
-    if(notes.length){const m=notes[0].midi;if(String(m)===liveCand)liveN++;else{liveCand=String(m);liveN=1}
-      if(liveN>=3&&m!==live.midi)liveSet(m);else if(liveN>=3)live.out.gain.setTargetAtTime(Math.min(0.3,0.08+lastRms*3),ctx.currentTime,0.05)}
-    else if(silentN>=3&&live.midi!==null)liveSet(null);
-  }
+  if(notes.length){silentN=0;lastHeard={notes,t:ctx.currentTime}}else silentN++;
+  if(live)follow(notes,ctx.currentTime); // live mode: the steadiness engine decides the key and the display
+  else if(!notes.length){if(silentN===4&&mode()==="auto")closeOpen();if(silentN>8){showNotes([]);shown="";lastLogged=""}}
+  else if(candN>=5&&key!==shown){shown=key;showNotes(notes);if(mode()==="auto")addLog(notes)}else if(key===shown)updateTune(notes[0]);
   if(pending){ // the analyser hears a new note ~0.1–0.2 s late, so vote from 0.12 s to 0.35 s after the tap
     const age=ctx.currentTime-pending.t;
     if(notes.length&&age>=0.12){const v=pending.votes.get(key);pending.votes.set(key,{n:(v?v.n:0)+1,notes})}
