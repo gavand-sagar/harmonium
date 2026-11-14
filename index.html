@@ -70,7 +70,8 @@ label.inline{display:inline-flex;align-items:center;gap:8px;font-size:14px;color
 .trans-head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px}
 .trans-head h2{font-size:15px;margin:0}
 .chips{display:flex;flex-wrap:wrap;gap:6px;min-height:40px;font-family:var(--display);font-size:1.15rem}
-.chips span{background:var(--accent-soft);border-radius:8px;padding:2px 10px}
+.chips span{background:var(--accent-soft);border-radius:8px;padding:2px 10px;transition:background .08s,color .08s}
+.chips span.now{background:var(--accent);color:#fff}
 .empty{font-family:var(--body);font-size:14px;color:var(--muted)}
 footer{font-size:12px;color:var(--muted);text-align:center}
 </style>
@@ -115,6 +116,8 @@ footer{font-size:12px;color:var(--muted);text-align:center}
     <div class="trans-head">
       <h2>Caught notes</h2>
       <div class="controls">
+        <button class="primary" id="play" disabled>Play back</button>
+        <select id="speed" aria-label="Playback speed"><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.5">1.5×</option></select>
         <button id="copy">Copy</button>
         <button id="clear">Clear</button>
       </div>
@@ -169,6 +172,7 @@ saSel.onchange=()=>{saPc=+saSel.value;try{localStorage.setItem("sur-sa",saPc)}ca
 let ctx,an,srcNode=null,micStream=null,demoStop=null,raf=0;
 const AC=()=>{if(!ctx){ctx=new (window.AudioContext||window.webkitAudioContext)();an=ctx.createAnalyser();an.fftSize=16384;an.smoothingTimeConstant=0.4}return ctx};
 function stopSource(){
+  if(raf)closeOpen();
   cancelAnimationFrame(raf);raf=0;
   if(demoStop){demoStop();demoStop=null}
   if(srcNode){try{srcNode.stop&&srcNode.stop()}catch(e){}try{srcNode.disconnect()}catch(e){}srcNode=null}
@@ -204,15 +208,11 @@ $("file").onchange=async e=>{
 $("demo").onclick=async()=>{
   if(demoStop){stopSource();$("status").textContent="Demo stopped.";return}
   stopSource();AC();await ctx.resume();
+  stopPlayback();
   const out=ctx.createGain();out.gain.value=0.25;out.connect(an);an.connect(ctx.destination);
-  const harm=[0,1,.9,.7,.55,.45,.35,.25,.2,.15,.1,.08];
-  const wave=ctx.createPeriodicWave(new Float32Array(harm.length),new Float32Array(harm));
   const seq=[0,2,4,5,7,9,11,12,12,11,9,7,5,4,2,0];
   const t0=ctx.currentTime+0.1,d=0.5,oscs=[];
-  const note=(semi,t,len)=>{const f=440*2**((60+saPc+semi-69)/12);
-    [0,4].forEach(det=>{const o=ctx.createOscillator(),g=ctx.createGain();o.setPeriodicWave(wave);o.frequency.value=f;o.detune.value=det;
-      g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(.5,t+.04);g.gain.setValueAtTime(.5,t+len-.06);g.gain.linearRampToValueAtTime(0,t+len);
-      o.connect(g);g.connect(out);o.start(t);o.stop(t+len+.02);oscs.push(o)})};
+  const note=(semi,t,len)=>voice(out,60+saPc+semi,t,len,oscs);
   seq.forEach((s,i)=>note(s,t0+i*d,d*.92));
   const ct=t0+seq.length*d+.3;[0,4,7].forEach(s=>note(s,ct,2.2));
   const timer=setTimeout(()=>{if(demoStop){stopSource();$("status").textContent="Demo finished. Try it with your own harmonium."}},(ct-ctx.currentTime+2.4)*1000);
@@ -220,6 +220,44 @@ $("demo").onclick=async()=>{
   $("demo").textContent="Stop demo";
   if(!$("chords").checked)$("status").textContent="Tip: tick \"Catch chords\" to see the final chord's three keys.";
   start("Playing demo: Sa Re Ga Ma Pa Dha Ni Sa' and back, then a chord.");
+};
+
+// Harmonium-like voice: two slightly detuned reeds with rich overtones
+let wave=null;
+function voice(dest,midi,t,len,list){
+  if(!wave){const harm=[0,1,.9,.7,.55,.45,.35,.25,.2,.15,.1,.08];wave=ctx.createPeriodicWave(new Float32Array(harm.length),new Float32Array(harm))}
+  const fr=440*2**((midi-69)/12),a=Math.min(.04,len/4);
+  [0,4].forEach(det=>{const o=ctx.createOscillator(),g=ctx.createGain();o.setPeriodicWave(wave);o.frequency.value=fr;o.detune.value=det;
+    g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(.5,t+a);g.gain.setValueAtTime(.5,t+len-a);g.gain.linearRampToValueAtTime(0,t+len);
+    o.connect(g);g.connect(dest);o.start(t);o.stop(t+len+.02);list.push(o)});
+}
+
+// Play back caught notes with their original timing
+let pbStop=null;
+function stopPlayback(){if(pbStop){pbStop();pbStop=null}}
+$("play").onclick=async()=>{
+  if(pbStop){stopPlayback();$("status").textContent="Playback stopped.";return}
+  if(micStream||demoStop||srcNode)stopSource(); // never let the mic hear the playback; also closes the last note
+  const items=log.filter(e=>e.d>0.05);
+  if(!items.length){$("status").textContent="Nothing to play yet.";return}
+  AC();await ctx.resume();
+  const speed=+$("speed").value,out=ctx.createGain();out.gain.value=0.2;out.connect(ctx.destination);
+  const start=ctx.currentTime+0.15,oscs=[],timers=[],chipEls=$("chips").children;
+  let at=0,prevEnd=items[0].t;
+  items.forEach(e=>{
+    at+=Math.min(Math.max(0,e.t-prevEnd),2)/speed; // keep real gaps, cap long silences at 2 s
+    const len=Math.min(e.d,6)/speed;
+    e.notes.forEach(m=>voice(out,m,start+at,len,oscs));
+    const idx=log.indexOf(e),on=at,off=at+len;
+    timers.push(setTimeout(()=>{chipEls[idx]&&chipEls[idx].classList.add("now");showNotes(e.notes.map(m=>({midi:m,freq:f(m),cents:0})))},(on+.15)*1000));
+    timers.push(setTimeout(()=>{chipEls[idx]&&chipEls[idx].classList.remove("now")},(off+.15)*1000));
+    at+=len;prevEnd=e.t+e.d;
+  });
+  timers.push(setTimeout(()=>{stopPlayback();$("status").textContent="Playback finished."},(at+.4)*1000));
+  pbStop=()=>{timers.forEach(clearTimeout);oscs.forEach(o=>{try{o.stop()}catch(e){}});out.disconnect();
+    [...chipEls].forEach(c=>c.classList.remove("now"));showNotes([]);$("play").textContent="Play back"};
+  $("play").textContent="Stop playback";
+  $("status").textContent=`Playing ${items.length} notes at ${speed}× in your rhythm.`;
 };
 
 // Pitch detection: harmonic sum over the log spectrum, with iterative harmonic removal for chords
@@ -253,7 +291,7 @@ function resetTracker(){cand="";candN=0;shown="";silentN=0;lastLogged=""}
 function loop(){
   const notes=detect(),key=notes.map(n=>n.midi).sort().join(",");
   if(key===cand)candN++;else{cand=key;candN=1}
-  if(!notes.length){silentN++;if(silentN>8){showNotes([]);shown="";lastLogged=""}}
+  if(!notes.length){silentN++;if(silentN===4)closeOpen();if(silentN>8){showNotes([]);shown="";lastLogged=""}}
   else{silentN=0;if(candN>=5&&key!==shown){shown=key;showNotes(notes);addLog(notes)}else if(key===shown)updateTune(notes[0])}
   raf=requestAnimationFrame(loop);
 }
@@ -270,18 +308,25 @@ function updateTune(n){
   $("west").textContent=`${WEST[n.midi%12]}${Math.floor(n.midi/12)-1} · ${n.freq.toFixed(1)} Hz · ${n.cents>0?"+":""}${n.cents}¢`;
   $("needle").style.left=(50+Math.max(-50,Math.min(50,n.cents)))+"%";
 }
+// Each caught note stores when it started and how long it lasted (seconds), so playback keeps the rhythm.
+// Detection confirms a note ~5 frames after it starts, so start times are shifted back by that lag.
+let open=null;
+function closeOpen(){if(open){open.d=Math.max(0.05,ctx.currentTime-0.08-open.t);open=null;updatePlay()}}
 function addLog(notes){
   const k=notes.map(n=>n.midi).join("+");if(k===lastLogged)return;lastLogged=k;
-  log.push(notes.map(n=>n.midi));if(log.length>300)log.shift();renderChips();
+  closeOpen();
+  open={notes:notes.map(n=>n.midi),t:ctx.currentTime-0.08,d:0};
+  log.push(open);if(log.length>300)log.shift();renderChips();
 }
+function updatePlay(){$("play").disabled=!log.some(e=>e.d>0.05)}
 function renderChips(){
   const c=$("chips");c.textContent="";
   if(!log.length){const e=document.createElement("span");e.className="empty";e.textContent="Notes you play appear here as sargam, ready to copy.";c.appendChild(e);return}
-  log.forEach(g=>{const s=document.createElement("span");s.textContent=g.map(m=>sargamOf(m).label).join("+");c.appendChild(s)});
+  log.forEach(e=>{const s=document.createElement("span");s.textContent=e.notes.map(m=>sargamOf(m).label).join("+");c.appendChild(s)});
 }
-$("clear").onclick=()=>{log.length=0;lastLogged="";renderChips()};
+$("clear").onclick=()=>{stopPlayback();log.length=0;lastLogged="";open=null;renderChips();updatePlay()};
 $("copy").onclick=async()=>{
-  const text=log.map(g=>g.map(m=>sargamOf(m).label).join("+")).join(" ");
+  const text=log.map(e=>e.notes.map(m=>sargamOf(m).label).join("+")).join(" ");
   if(!text){$("status").textContent="Nothing to copy yet.";return}
   try{await navigator.clipboard.writeText(text);$("status").textContent="Copied "+log.length+" notes."}
   catch(e){const r=document.createRange();r.selectNodeContents($("chips"));const sel=getSelection();sel.removeAllRanges();sel.addRange(r);$("status").textContent="Selected. Press Ctrl+C to copy."}
