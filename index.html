@@ -60,6 +60,15 @@ button:focus-visible,select:focus-visible,.file:focus-within,input:focus-visible
 .meter i{position:absolute;top:-3px;bottom:-3px;width:4px;border-radius:2px;background:var(--ink);left:50%;transform:translateX(-50%);transition:left .08s}
 .scale{display:flex;justify-content:space-between;font-family:var(--mono);font-size:10px;color:var(--muted)}
 .level{display:none}
+.sens{width:100%;max-width:420px;display:grid;grid-template-columns:1fr;gap:6px;text-align:left}
+.sens label{font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);display:flex;justify-content:space-between}
+.sens output{color:var(--ink);letter-spacing:0}
+.sens input{width:100%;margin:0;accent-color:currentColor}
+.smeter{position:relative;height:6px;border-radius:3px;background:rgba(127,127,127,.2);overflow:hidden}
+.smeter b{position:absolute;inset:0 auto 0 0;width:0;background:#3a9a5b;transition:width .08s}
+.smeter b.below{background:rgba(127,127,127,.55)}
+.smeter i{position:absolute;top:0;bottom:0;width:2px;background:var(--ink)}
+.sens small{font-size:11px;color:var(--muted)}
 .sing{--lvl:0;width:136px;height:136px;border-radius:50%;flex-direction:column;gap:4px;border:0;background:var(--accent);color:#fff;font-size:15px;
   box-shadow:0 0 0 calc(4px + var(--lvl)*22px) color-mix(in srgb,var(--accent) 22%,transparent);transition:box-shadow .08s,background .2s;touch-action:manipulation}
 .sing svg{width:38px;height:38px}
@@ -138,6 +147,12 @@ footer{font-size:12px;color:var(--muted);text-align:center;padding-inline:8px}
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
       <span id="singlabel">Tap to sing</span>
     </button>
+    <div class="sens">
+      <label for="sens">Mic sensitivity <output id="sensval">6</output></label>
+      <input type="range" id="sens" min="1" max="10" step="1" value="6" aria-describedby="senshint">
+      <div class="smeter" aria-hidden="true"><b id="slvl"></b><i id="sgate"></i></div>
+      <small id="senshint">Raise it if soft singing isn't caught. Lower it if background noise sets off notes.</small>
+    </div>
     <div class="seg" role="radiogroup" aria-label="Harmonium octave">
       <label><input type="radio" name="oct" value="-12"><span>Lower</span></label>
       <label><input type="radio" name="oct" value="0" checked><span>Same</span></label>
@@ -245,7 +260,7 @@ function releaseWake(){try{wake&&wake.release()}catch(e){}wake=null}
 let liveMode=false,live=null,lastRms=0;
 function liveStop(){
   if(live){const l=live;if(l.cur)releaseReed(l.cur,ctx.currentTime,0.08);setTimeout(()=>l.out.disconnect(),400);live=null}
-  liveMode=false;droneUpdate();$("sing").classList.remove("on");$("singlabel").textContent="Tap to sing";$("sing").style.setProperty("--lvl",0);releaseWake();
+  liveMode=false;droneUpdate();$("sing").classList.remove("on");$("singlabel").textContent="Tap to sing";$("sing").style.setProperty("--lvl",0);$("slvl").style.width=0;releaseWake();
   if(an&&an.fftSize!==16384)an.fftSize=16384;
 }
 function liveSet(midi){
@@ -475,7 +490,8 @@ function detect(){
   if(!spec||spec.length!==an.frequencyBinCount){spec=new Float32Array(an.frequencyBinCount);td=new Float32Array(an.fftSize)}
   an.getFloatTimeDomainData(td);let rms=0;for(let i=0;i<td.length;i+=4)rms+=td[i]*td[i];rms=Math.sqrt(rms/(td.length/4));lastRms=rms;
   $("level").style.width=Math.min(100,rms*400)+"%";if(liveMode)$("sing").style.setProperty("--lvl",Math.min(1,rms*8).toFixed(2));
-  if(rms<(liveMode?(drone?0.02:0.012):0.008))return[];
+  const gate=(liveMode?(drone?0.02:0.012):0.008)*sensK();sensShow(rms,gate);
+  if(rms<gate)return[];
   const rLo=liveMode?40:LOW,rHi=liveMode?84:HIGH; // voices reach lower than the keyboard (E2..C6)
   if(liveMode||!$("chords").checked){ // single note: time-domain YIN, much better at the right octave for reeds and voices
     const fr=yinPitch(td,sr);if(!fr)return[];
@@ -573,6 +589,13 @@ function droneUpdate(){
   const sa=48+saPc,keys=[sa];if(v==="pa")keys.push(sa-5);if(v==="ma")keys.push(sa-7);
   drone={g,reeds:keys.map(k=>startReed(g,k,ctx.currentTime))};
 }
+// Mic sensitivity: moves the loudness gate below which sound is ignored (5 = original gate, each step ~30%)
+const sensK=()=>Math.pow(0.7,+$("sens").value-5);
+const lpos=r=>Math.max(0,Math.min(100,(Math.log10(Math.max(r,1e-5))+3.7)/3.2*100)); // log scale, ~0.0002..0.3 RMS
+function sensShow(rms,gate){const b=$("slvl");b.style.width=lpos(rms)+"%";b.classList.toggle("below",rms<gate);$("sgate").style.left=lpos(gate)+"%"}
+function sensUpdate(){$("sensval").textContent=$("sens").value;$("sgate").style.left=lpos(0.012*sensK())+"%";try{localStorage.setItem("sur-sens",$("sens").value)}catch(e){}}
+try{const v=+localStorage.getItem("sur-sens");if(v>=1&&v<=10)$("sens").value=v}catch(e){}
+$("sens").addEventListener("input",sensUpdate);sensUpdate();
 // Remember choices on this device
 ["steady","scale","drone"].forEach(id=>{
   try{const v=localStorage.getItem("sur-"+id);if(v&&[...$(id).options].some(o=>o.value===v))$(id).value=v}catch(e){}
